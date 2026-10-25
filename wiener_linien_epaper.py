@@ -27,7 +27,7 @@ from waveshare_epd import epd2in9_V2
 
 STOP_ID = "2044"
 LINE_NAME = "71"
-TOWARDS_FILTER = "Schottenring"
+TOWARDS_FILTERS = ("Schottenring", "Schwarzenbergplatz")
 
 API_URL = "https://www.wienerlinien.at/ogd_realtime/monitor"
 LOCAL_TZ = ZoneInfo("Europe/Vienna")
@@ -44,7 +44,6 @@ MAX_CACHE_AGE = timedelta(minutes=90)
 FULL_REFRESH_EVERY_REDRAWS = 20
 CLEAR_ON_EXIT = False
 
-FONT_REGULAR_PATH = "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
 FONT_BOLD_PATH = "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
 
 WHITE = 255
@@ -106,19 +105,10 @@ class State:
 
 @dataclass(frozen=True)
 class Fonts:
-    header_time: ImageFont.ImageFont
-    header_small: ImageFont.ImageFont
-    hero_badge: ImageFont.ImageFont
-    hero_destination: ImageFont.ImageFont
-    hero_exact: ImageFont.ImageFont
-    hero_countdown: ImageFont.ImageFont
-    hero_unit: ImageFont.ImageFont
-    row_badge: ImageFont.ImageFont
-    row_destination: ImageFont.ImageFont
-    row_countdown: ImageFont.ImageFont
-    row_exact: ImageFont.ImageFont
+    header: ImageFont.ImageFont
+    destination: ImageFont.ImageFont
+    countdown: ImageFont.ImageFont
     footer: ImageFont.ImageFont
-    footer_icon: ImageFont.ImageFont
 
 
 # ----------------------------
@@ -163,9 +153,9 @@ def optional_int(value: object) -> Optional[int]:
 
 
 def matches_towards(actual: str) -> bool:
-    if not TOWARDS_FILTER:
-        return True
-    return TOWARDS_FILTER.casefold() in actual.casefold()
+    return not TOWARDS_FILTERS or any(
+        destination.casefold() in actual.casefold() for destination in TOWARDS_FILTERS
+    )
 
 
 def parse_api_time(value: object) -> Optional[datetime]:
@@ -338,7 +328,7 @@ class WienerLinienClient:
             departure_at = fetched_at + timedelta(minutes=max(0, countdown))
 
         line_name = clean_text(vehicle.get("name")) or clean_text(line.get("name")) or LINE_NAME
-        towards = clean_text(vehicle.get("towards")) or clean_text(line.get("towards")) or TOWARDS_FILTER or "--"
+        towards = clean_text(vehicle.get("towards")) or clean_text(line.get("towards")) or "--"
 
         realtime_supported = optional_bool(vehicle.get("realtimeSupported"))
         if realtime_supported is None:
@@ -479,9 +469,6 @@ def status_text(state: State, now: datetime) -> str:
             return f"Keine aktuellen Daten - Stand {snapshot.fetched_at:%H:%M}"
         return f"Daten veraltet - Stand {snapshot.fetched_at:%H:%M}"
 
-    if not snapshot.matching_line_found:
-        return f"{LINE_NAME} Richtung {TOWARDS_FILTER} nicht gefunden"
-
     if snapshot.disruption:
         if snapshot.disruption.casefold().startswith("störung"):
             return snapshot.disruption
@@ -490,7 +477,7 @@ def status_text(state: State, now: datetime) -> str:
     if snapshot.traffic_jam:
         return "Stau auf der Strecke"
 
-    if not visible_departures(state, now):
+    if not snapshot.matching_line_found or not visible_departures(state, now):
         return "Keine Abfahrten"
 
     if not snapshot.realtime_supported:
@@ -505,16 +492,14 @@ def render_key(state: State, now: datetime) -> tuple:
         (
             departure.line,
             departure.towards,
-            countdown_text(departure, now, state.stale),
-            departure.time_text
+            countdown_text(departure, now, state.stale)
         )
         for departure in departures
     )
 
-    last_update = state.snapshot.fetched_at.strftime("%H:%M") if state.snapshot else "--:--"
-    clock = now.strftime("%H:00") if is_night(now) else now.strftime("%H:%M")
+    clock = now.strftime("%H:%M")
 
-    return clock, last_update, departure_key, status_text(state, now), state.stale
+    return clock, departure_key, status_text(state, now), state.stale
 
 
 # ----------------------------
@@ -535,19 +520,10 @@ def load_font(path: str, size: int) -> ImageFont.ImageFont:
 
 def load_fonts() -> Fonts:
     return Fonts(
-        header_time=load_font(FONT_BOLD_PATH, 18),
-        header_small=load_font(FONT_REGULAR_PATH, 10),
-        hero_badge=load_font(FONT_BOLD_PATH, 30),
-        hero_destination=load_font(FONT_BOLD_PATH, 23),
-        hero_exact=load_font(FONT_BOLD_PATH, 13),
-        hero_countdown=load_font(FONT_BOLD_PATH, 46),
-        hero_unit=load_font(FONT_BOLD_PATH, 18),
-        row_badge=load_font(FONT_BOLD_PATH, 14),
-        row_destination=load_font(FONT_REGULAR_PATH, 16),
-        row_countdown=load_font(FONT_BOLD_PATH, 19),
-        row_exact=load_font(FONT_REGULAR_PATH, 15),
-        footer=load_font(FONT_BOLD_PATH, 12),
-        footer_icon=load_font(FONT_BOLD_PATH, 12)
+        header=load_font(FONT_BOLD_PATH, 22),
+        destination=load_font(FONT_BOLD_PATH, 18),
+        countdown=load_font(FONT_BOLD_PATH, 24),
+        footer=load_font(FONT_BOLD_PATH, 16)
     )
 
 
@@ -576,151 +552,44 @@ def fit_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, ma
     return text[:low].rstrip() + ellipsis
 
 
-def draw_centered(
-    draw: ImageDraw.ImageDraw,
-    box: tuple[int, int, int, int],
-    text: str,
-    font: ImageFont.ImageFont,
-    fill: int
-) -> None:
-    left, top, right, bottom = box
-    bbox = draw.textbbox((0, 0), text, font=font)
-    width = bbox[2] - bbox[0]
-    height = bbox[3] - bbox[1]
-    x = left + ((right - left) - width) // 2 - bbox[0]
-    y = top + ((bottom - top) - height) // 2 - bbox[1]
-    draw.text((x, y), text, font=font, fill=fill)
-
-
-def draw_right(draw: ImageDraw.ImageDraw, right: int, y: int, text: str, font: ImageFont.ImageFont) -> int:
-    x = right - text_width(draw, text, font)
-    draw.text((x, y), text, font=font, fill=BLACK)
-    return x
-
-
-def draw_connection_icon(draw: ImageDraw.ImageDraw, x: int, y: int, connected: bool) -> None:
-    draw.arc((x, y, x + 16, y + 16), 215, 325, fill=BLACK, width=2)
-    draw.arc((x + 3, y + 4, x + 13, y + 14), 215, 325, fill=BLACK, width=2)
-    draw.ellipse((x + 7, y + 11, x + 9, y + 13), fill=BLACK)
-
-    if not connected:
-        draw.line((x + 1, y + 1, x + 15, y + 15), fill=BLACK, width=2)
-
-
 # ----------------------------
 # UI
 # ----------------------------
 
-def draw_hero(
-    draw: ImageDraw.ImageDraw,
-    departure: Optional[Departure],
-    now: datetime,
-    stale: bool,
-    fonts: Fonts
-) -> None:
-    badge = (8, 28, 57, 67)
-    draw.rectangle(badge, fill=BLACK)
-    draw_centered(draw, badge, departure.line if departure else LINE_NAME, fonts.hero_badge, WHITE)
-
-    countdown = countdown_text(departure, now, stale)
-    unit_width = text_width(draw, "min", fonts.hero_unit)
-    unit_x = 292 - unit_width
-    countdown_right = unit_x - 4
-    countdown_x = countdown_right - text_width(draw, countdown, fonts.hero_countdown)
-
-    destination = departure.towards if departure else TOWARDS_FILTER or "--"
-    destination = fit_text(draw, destination, fonts.hero_destination, max(0, countdown_x - 72))
-    draw.text((64, 27), destination, font=fonts.hero_destination, fill=BLACK)
-
-    departure_time = departure.time_text if departure else "--:--"
-    draw.text((64, 52), f"Abfahrt: {departure_time}", font=fonts.hero_exact, fill=BLACK)
-
-    draw.text((countdown_x, 20), countdown, font=fonts.hero_countdown, fill=BLACK)
-    draw.text((unit_x, 47), "min", font=fonts.hero_unit, fill=BLACK)
-
-
-def draw_row(
-    draw: ImageDraw.ImageDraw,
-    departure: Optional[Departure],
-    y: int,
-    now: datetime,
-    stale: bool,
-    fonts: Fonts
-) -> None:
-    badge = (8, y + 2, 41, y + 19)
-    draw.rectangle(badge, fill=BLACK)
-    draw_centered(draw, badge, departure.line if departure else LINE_NAME, fonts.row_badge, WHITE)
-
-    destination = departure.towards if departure else "--"
-    destination = fit_text(draw, destination, fonts.row_destination, 136)
-    draw.text((47, y), destination, font=fonts.row_destination, fill=BLACK)
-
-    draw_right(
-        draw,
-        245,
-        y - 1,
-        f"{countdown_text(departure, now, stale)} min",
-        fonts.row_countdown
-    )
-    draw_right(
-        draw,
-        292,
-        y,
-        departure.time_text if departure else "--:--",
-        fonts.row_exact
-    )
-
-
-def draw_footer(draw: ImageDraw.ImageDraw, state: State, now: datetime, fonts: Fonts) -> None:
-    text = status_text(state, now)
-    healthy = not state.stale and text == "Betrieb normal"
-    icon_box = (8, 113, 22, 127)
-
-    if healthy:
-        draw.ellipse(icon_box, outline=BLACK, width=2)
-        draw_centered(draw, icon_box, "i", fonts.footer_icon, BLACK)
-    else:
-        draw.ellipse(icon_box, fill=BLACK)
-        symbol = "!" if state.stale or "Störung" in text or "Stau" in text else "i"
-        draw_centered(draw, icon_box, symbol, fonts.footer_icon, WHITE)
-
-    draw.text((28, 113), fit_text(draw, text, fonts.footer, 263), font=fonts.footer, fill=BLACK)
-
-
 def render_image(epd, state: State, fonts: Fonts, now: datetime) -> Image.Image:
-    width = epd.height
-    height = epd.width
+    width, height = epd.height, epd.width
     image = Image.new("1", (width, height), WHITE)
     draw = ImageDraw.Draw(image)
 
-    departures = list(visible_departures(state, now))
-    while len(departures) < MAX_DEPARTURES:
-        departures.append(None)
+    draw.text((6, 0), LINE_NAME, font=fonts.header, fill=BLACK, anchor="lt")
+    draw.text((width - 6, 0), now.strftime("%H:%M"), font=fonts.header,
+              fill=BLACK, anchor="rt")
+    draw.line((6, 24, width - 6, 24), fill=BLACK)
 
-    draw.text((8, 1), now.strftime("%H:%M"), font=fonts.header_time, fill=BLACK)
+    departures = visible_departures(state, now)
+    for index in range(MAX_DEPARTURES):
+        departure = departures[index] if index < len(departures) else None
+        y = 27 + index * 22
+        countdown = f"{countdown_text(departure, now, state.stale)} min"
+        available = width - 20 - text_width(draw, countdown, fonts.countdown)
+        destination = departure.towards if departure else "--"
+        draw.text((6, y + 3), fit_text(draw, destination, fonts.destination, available),
+                  font=fonts.destination, fill=BLACK, anchor="lt")
+        draw.text((width - 6, y), countdown, font=fonts.countdown,
+                  fill=BLACK, anchor="rt")
 
-    last_update = state.snapshot.fetched_at.strftime("%H:%M") if state.snapshot else "--:--"
-    draw_right(
-        draw,
-        width - 28,
-        4,
-        f"Letzte Aktualisierung: {last_update}",
-        fonts.header_small
-    )
-    draw_connection_icon(draw, width - 22, 2, not state.stale)
-
-    draw.line((8, 23, width - 8, 23), fill=BLACK)
-    draw_hero(draw, departures[0], now, state.stale, fonts)
-
-    draw.line((8, 70, width - 8, 70), fill=BLACK)
-    draw_row(draw, departures[1], 72, now, state.stale, fonts)
-
-    draw.line((8, 91, width - 8, 91), fill=BLACK)
-    draw_row(draw, departures[2], 93, now, state.stale, fonts)
-
-    draw.line((8, 112, width - 8, 112), fill=BLACK)
-    draw_footer(draw, state, now, fonts)
-
+    draw.line((6, 94, width - 6, 94), fill=BLACK)
+    # Reserve two lines for service alerts, including when there are no departures.
+    words = status_text(state, now).split()
+    first_line = ""
+    while words and text_width(draw, " ".join(filter(None, (first_line, words[0]))),
+                               fonts.footer) <= width - 12:
+        first_line = " ".join(filter(None, (first_line, words.pop(0))))
+    if not first_line and words:
+        first_line = fit_text(draw, words.pop(0), fonts.footer, width - 12)
+    draw.text((6, 97), first_line, font=fonts.footer, fill=BLACK, anchor="lt")
+    draw.text((6, 112), fit_text(draw, " ".join(words), fonts.footer, width - 12),
+              font=fonts.footer, fill=BLACK, anchor="lt")
     return image
 
 
