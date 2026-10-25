@@ -45,6 +45,7 @@ FULL_REFRESH_EVERY_REDRAWS = 20
 CLEAR_ON_EXIT = False
 
 FONT_BOLD_PATH = "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
+FONT_MONO_PATH = "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf"
 
 WHITE = 255
 BLACK = 0
@@ -106,8 +107,11 @@ class State:
 @dataclass(frozen=True)
 class Fonts:
     header: ImageFont.ImageFont
+    clock: ImageFont.ImageFont
+    label: ImageFont.ImageFont
     destination: ImageFont.ImageFont
     countdown: ImageFont.ImageFont
+    unit: ImageFont.ImageFont
     footer: ImageFont.ImageFont
 
 
@@ -521,9 +525,12 @@ def load_font(path: str, size: int) -> ImageFont.ImageFont:
 def load_fonts() -> Fonts:
     return Fonts(
         header=load_font(FONT_BOLD_PATH, 22),
+        clock=load_font(FONT_MONO_PATH, 19),
+        label=load_font(FONT_BOLD_PATH, 11),
         destination=load_font(FONT_BOLD_PATH, 18),
-        countdown=load_font(FONT_BOLD_PATH, 24),
-        footer=load_font(FONT_BOLD_PATH, 16)
+        countdown=load_font(FONT_MONO_PATH, 28),
+        unit=load_font(FONT_BOLD_PATH, 12),
+        footer=load_font(FONT_BOLD_PATH, 14)
     )
 
 
@@ -556,40 +563,82 @@ def fit_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, ma
 # UI
 # ----------------------------
 
+def draw_tram_icon(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
+    # Draw at native resolution so icons remain crisp on a monochrome panel.
+    draw.line((x + 4, y, x + 10, y, x + 7, y + 3), fill=WHITE)
+    draw.rounded_rectangle((x, y + 4, x + 14, y + 15), radius=2, outline=WHITE)
+    draw.rectangle((x + 3, y + 6, x + 11, y + 10), fill=WHITE)
+    draw.point((x + 3, y + 13), fill=WHITE)
+    draw.point((x + 11, y + 13), fill=WHITE)
+    draw.line((x + 3, y + 16, x + 1, y + 18), fill=WHITE)
+    draw.line((x + 11, y + 16, x + 13, y + 18), fill=WHITE)
+
+
+def draw_status(draw: ImageDraw.ImageDraw, state: State, now: datetime,
+                fonts: Fonts, width: int) -> None:
+    text = status_text(state, now)
+    warning = state.stale or bool(state.snapshot and (
+        state.snapshot.disruption or state.snapshot.traffic_jam
+    ))
+    ink = WHITE if warning else BLACK
+    draw.rectangle((0, 96, width - 1, 127), fill=BLACK if warning else WHITE)
+    if warning:
+        draw.polygon(((6, 118), (14, 103), (22, 118)), outline=ink)
+        draw.line((14, 108, 14, 112), fill=ink, width=2)
+        draw.rectangle((14, 115, 15, 116), fill=ink)
+    else:
+        draw.ellipse((6, 103, 22, 119), outline=ink)
+        if text == "Betrieb normal":
+            draw.line((10, 111, 13, 114, 18, 108), fill=ink, width=2)
+        else:
+            draw.line((14, 107, 14, 111, 18, 111), fill=ink)
+
+    # Two lines keep service alerts readable even without any departures.
+    words = text.split()
+    first_line = ""
+    while words and text_width(draw, (first_line + " " + words[0]).strip(),
+                               fonts.footer) <= width - 36:
+        first_line = (first_line + " " + words.pop(0)).strip()
+    if not first_line and words:
+        first_line = fit_text(draw, words.pop(0), fonts.footer, width - 36)
+    y = 99 if words else 106
+    draw.text((30, y), first_line, font=fonts.footer, fill=ink, anchor="lt")
+    if words:
+        draw.text((30, 113), fit_text(draw, " ".join(words), fonts.footer, width - 36),
+                  font=fonts.footer, fill=ink, anchor="lt")
+
+
 def render_image(epd, state: State, fonts: Fonts, now: datetime) -> Image.Image:
     width, height = epd.height, epd.width
     image = Image.new("1", (width, height), WHITE)
     draw = ImageDraw.Draw(image)
 
-    draw.text((6, 0), LINE_NAME, font=fonts.header, fill=BLACK, anchor="lt")
-    draw.text((width - 6, 0), now.strftime("%H:%M"), font=fonts.header,
+    draw.rounded_rectangle((6, 3, 69, 26), radius=4, fill=BLACK)
+    draw_tram_icon(draw, 12, 5)
+    draw.text((34, 6), LINE_NAME, font=fonts.header, fill=WHITE, anchor="lt")
+    draw.text((81, 10), "ABFAHRTEN", font=fonts.label, fill=BLACK, anchor="lt")
+    draw.text((width - 6, 7), now.strftime("%H:%M"), font=fonts.clock,
               fill=BLACK, anchor="rt")
-    draw.line((6, 24, width - 6, 24), fill=BLACK)
+    draw.line((6, 29, width - 6, 29), fill=BLACK)
 
     departures = visible_departures(state, now)
+    draw.line((12, 42, 12, 86), fill=BLACK)
     for index in range(MAX_DEPARTURES):
         departure = departures[index] if index < len(departures) else None
-        y = 27 + index * 22
-        countdown = f"{countdown_text(departure, now, state.stale)} min"
-        available = width - 20 - text_width(draw, countdown, fonts.countdown)
+        y = 33 + index * 22
+        draw.ellipse((9, y + 6, 15, y + 12), outline=BLACK,
+                     fill=BLACK if index == 0 else WHITE)
+        countdown = countdown_text(departure, now, state.stale)
+        available = width - 57 - text_width(draw, countdown, fonts.countdown)
         destination = departure.towards if departure else "--"
-        draw.text((6, y + 3), fit_text(draw, destination, fonts.destination, available),
+        draw.text((23, y + 1), fit_text(draw, destination, fonts.destination, available),
                   font=fonts.destination, fill=BLACK, anchor="lt")
-        draw.text((width - 6, y), countdown, font=fonts.countdown,
+        draw.text((width - 31, y - 2), countdown, font=fonts.countdown,
                   fill=BLACK, anchor="rt")
+        draw.text((width - 6, y + 7), "min", font=fonts.unit, fill=BLACK, anchor="rt")
 
-    draw.line((6, 94, width - 6, 94), fill=BLACK)
-    # Reserve two lines for service alerts, including when there are no departures.
-    words = status_text(state, now).split()
-    first_line = ""
-    while words and text_width(draw, " ".join(filter(None, (first_line, words[0]))),
-                               fonts.footer) <= width - 12:
-        first_line = " ".join(filter(None, (first_line, words.pop(0))))
-    if not first_line and words:
-        first_line = fit_text(draw, words.pop(0), fonts.footer, width - 12)
-    draw.text((6, 97), first_line, font=fonts.footer, fill=BLACK, anchor="lt")
-    draw.text((6, 112), fit_text(draw, " ".join(words), fonts.footer, width - 12),
-              font=fonts.footer, fill=BLACK, anchor="lt")
+    draw.line((6, 95, width - 6, 95), fill=BLACK)
+    draw_status(draw, state, now, fonts, width)
     return image
 
 

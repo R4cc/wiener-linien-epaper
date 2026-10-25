@@ -1,6 +1,7 @@
 import sys
 import unittest
 from dataclasses import replace
+from itertools import combinations
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -70,7 +71,8 @@ class MonitorTests(unittest.TestCase):
 
     def test_rendering_normal_alert_offline_and_expired_cache(self):
         snapshot = self.fetch([
-            self.line("Schwarzenbergplatz", 3), self.line("Schottenring", 12)
+            self.line("Schwarzenbergplatz", 3), self.line("Schottenring", 12),
+            self.line("Schwarzenbergplatz", 120)
         ])
         states = [
             monitor.State(snapshot, False),
@@ -82,6 +84,7 @@ class MonitorTests(unittest.TestCase):
         ]
         fonts = monitor.load_fonts()
         original_text = ImageDraw.ImageDraw.text
+        text_boxes = []
 
         def checked_text(draw, xy, text, *args, **kwargs):
             left, top, right, bottom = draw.textbbox(
@@ -91,18 +94,24 @@ class MonitorTests(unittest.TestCase):
             self.assertGreaterEqual(top, 0, text)
             self.assertLessEqual(right, 296, text)
             self.assertLessEqual(bottom, 128, text)
+            text_boxes.append((text, (left, top, right, bottom)))
             return original_text(draw, xy, text, *args, **kwargs)
 
         for state in states:
             with self.subTest(state=state), \
                     patch.object(ImageDraw.ImageDraw, "text", checked_text):
+                text_boxes.clear()
                 image = monitor.render_image(SimpleNamespace(width=128, height=296),
                                              state, fonts, self.now)
                 self.assertEqual(image.size, (296, 128))
                 self.assertEqual(image.mode, "1")
                 self.assertIsNotNone(image.getbbox())
+                for (first, a), (second, b) in combinations(text_boxes, 2):
+                    overlaps = (max(a[0], b[0]) < min(a[2], b[2]) and
+                                max(a[1], b[1]) < min(a[3], b[3]))
+                    self.assertFalse(overlaps, (first, second))
         draw = ImageDraw.Draw(image)
-        available = 296 - 20 - monitor.text_width(draw, "3 min", fonts.countdown)
+        available = 296 - 57 - monitor.text_width(draw, "120", fonts.countdown)
         self.assertEqual(monitor.fit_text(draw, "Schwarzenbergplatz", fonts.destination,
                                           available), "Schwarzenbergplatz")
 
