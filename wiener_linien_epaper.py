@@ -44,7 +44,8 @@ MAX_CACHE_AGE = timedelta(minutes=90)
 FULL_REFRESH_EVERY_REDRAWS = 20
 CLEAR_ON_EXIT = False
 
-FONT_PATH = Path(__file__).resolve().parent / "assets" / "fonts" / "Tiny5.ttf"
+FONT_BOLD_PATH = "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
+FONT_MONO_PATH = "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf"
 
 WHITE = 255
 BLACK = 0
@@ -509,22 +510,27 @@ def render_key(state: State, now: datetime) -> tuple:
 # Rendering helpers
 # ----------------------------
 
-def load_font(size: int) -> ImageFont.ImageFont:
-    font = ImageFont.truetype(str(FONT_PATH), size)
-    # Medium weight keeps the pixel strokes solid in Pillow's one-bit renderer.
-    font.set_variation_by_axes([500, 100, 0, 0, 0])
-    return font
+def load_font(path: str, size: int) -> ImageFont.ImageFont:
+    requested = Path(path)
+    fallback = Path(FONT_BOLD_PATH)
+
+    if requested.exists():
+        return ImageFont.truetype(str(requested), size)
+    if fallback.exists():
+        return ImageFont.truetype(str(fallback), size)
+
+    return ImageFont.load_default()
 
 
 def load_fonts() -> Fonts:
     return Fonts(
-        header=load_font(24),
-        clock=load_font(20),
-        label=load_font(14),
-        destination=load_font(20),
-        countdown=load_font(30),
-        unit=load_font(14),
-        footer=load_font(16)
+        header=load_font(FONT_BOLD_PATH, 22),
+        clock=load_font(FONT_MONO_PATH, 19),
+        label=load_font(FONT_BOLD_PATH, 11),
+        destination=load_font(FONT_BOLD_PATH, 18),
+        countdown=load_font(FONT_MONO_PATH, 28),
+        unit=load_font(FONT_BOLD_PATH, 12),
+        footer=load_font(FONT_BOLD_PATH, 14)
     )
 
 
